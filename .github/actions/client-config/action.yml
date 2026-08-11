@@ -1,0 +1,106 @@
+name: Read client config
+description: >
+  Parse client.yaml, validate it, expose values as outputs, and write .env for
+  the SvelteKit build. Single source of truth for both deploy and validate.
+
+inputs:
+  config-path:
+    description: Path to client.yaml, relative to the workspace root
+    required: false
+    default: client.yaml
+  write-env:
+    description: Write .env from public_env. Set false to validate config only.
+    required: false
+    default: 'true'
+
+outputs:
+  slug:
+    description: Client slug, used for resource naming
+    value: ${{ steps.parse.outputs.slug }}
+  domain:
+    value: ${{ steps.parse.outputs.domain }}
+  region:
+    value: ${{ steps.parse.outputs.region }}
+  stack:
+    value: ${{ steps.parse.outputs.stack }}
+  zone:
+    value: ${{ steps.parse.outputs.zone }}
+  www:
+    value: ${{ steps.parse.outputs.www }}
+  bucket_override:
+    value: ${{ steps.parse.outputs.bucket_override }}
+
+runs:
+  using: composite
+  steps:
+    - name: Parse and validate
+      id: parse
+      shell: bash
+      run: |
+        set -euo pipefail
+        F="${{ inputs.config-path }}"
+        test -f "$F" || { echo "::error::$F not found"; exit 1; }
+        yq -e '.' "$F" > /dev/null || { echo "::error::$F is not valid YAML"; exit 1; }
+
+        fail=0
+        for key in client domain aws.region aws.stack_name aws.hosted_zone_id; do
+          if [ -z "$(yq -r ".$key // \"\"" "$F")" ]; then
+            echo "::error file=$F::missing required key: $key"
+            fail=1
+          fi
+        done
+
+        SLUG=$(yq -r '.client // ""' "$F")
+        if [ -n "$SLUG" ] && ! printf '%s' "$SLUG" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'; then
+          echo "::error file=$F::client slug '$SLUG' must be lowercase alphanumeric plus hyphens, 3-32 chars (S3 bucket naming)"
+          fail=1
+        fi
+
+        WWW=$(yq -r '.www // true' "$F")
+        case "$WWW" in
+          true|false) ;;
+          *) echo "::error file=$F::www must be true or false, got '$WWW'"; fail=1 ;;
+        esac
+
+        # A subdomain site with www: true yields www.app.example.com — almost
+        # never intended, and it silently blocks ACM validation.
+        DOMAIN=$(yq -r '.domain // ""' "$F")
+        if [ "$WWW" = "true" ] && [ "$(printf '%s' "$DOMAIN" | tr -cd '.' | wc -c)" -gt 1 ]; then
+          echo "::error file=$F::domain '$DOMAIN' looks like a subdomain; set www: false"
+          fail=1
+        fi
+
+        while read -r k; do
+          [ -z "$k" ] && continue
+          case "$k" in
+            PUBLIC_[A-Z0-9_]*) ;;
+            *) echo "::error file=$F::public_env key '$k' must match PUBLIC_[A-Z0-9_]+ or SvelteKit ignores it"; fail=1 ;;
+          esac
+        done < <(yq -r '.public_env // {} | to_entries[] | .key' "$F")
+
+        [ "$fail" -eq 0 ] || exit 1
+
+        {
+          echo "slug=$SLUG"
+          echo "domain=$DOMAIN"
+          echo "www=$WWW"
+          echo "region=$(yq -r '.aws.region' "$F")"
+          echo "stack=$(yq -r '.aws.stack_name' "$F")"
+          echo "zone=$(yq -r '.aws.hosted_zone_id' "$F")"
+          echo "bucket_override=$(yq -r '.aws.bucket_name_override // ""' "$F")"
+        } >> "$GITHUB_OUTPUT"
+
+    # Plain .env, not .env.production: svelte-kit sync runs in dev mode during
+    # `npm run check`, and Vite only loads .env in every mode.
+    - name: Write .env
+      if: inputs.write-env == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        yq -r '.public_env // {} | to_entries[] | .key + "=" + (.value | tostring)' \
+          "${{ inputs.config-path }}" > .env
+        if [ -s .env ]; then
+          echo "Injected: $(cut -d= -f1 .env | tr '\n' ' ')"
+        else
+          echo "No public_env keys defined."
+        fi

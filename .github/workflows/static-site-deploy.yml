@@ -44,29 +44,6 @@ jobs:
           ref: ${{ steps.wfref.outputs.ref }}
           path: .solvent
 
-      - name: Read client config
-        id: cfg
-        run: |
-          F="${{ inputs.config-path }}"
-          test -f "$F" || { echo "::error::$F not found"; exit 1; }
-
-          for key in client domain aws.region aws.stack_name aws.hosted_zone_id; do
-            val=$(yq -r ".$key // \"\"" "$F")
-            if [ -z "$val" ]; then echo "::error::$F is missing required key: $key"; exit 1; fi
-          done
-
-          {
-            echo "slug=$(yq -r '.client' "$F")"
-            echo "domain=$(yq -r '.domain' "$F")"
-            echo "region=$(yq -r '.aws.region' "$F")"
-            echo "stack=$(yq -r '.aws.stack_name' "$F")"
-            echo "zone=$(yq -r '.aws.hosted_zone_id' "$F")"
-            echo "www=$(yq -r '.www // true' "$F")"
-            echo "bucket_override=$(yq -r '.aws.bucket_name_override // \"\"' "$F")"
-            echo "ga_id=$(yq -r '.analytics.ga_measurement_id // \"\"' "$F")"
-            echo "web3forms_id=$(yq -r '.integrations.web3forms_id // \"\"' "$F")"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -74,6 +51,12 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - uses: ./.solvent/.github/actions/client-config
+        id: cfg
+        with:
+          config-path: ${{ inputs.config-path }}
+
       - run: npm run check
       - run: npm run lint
 

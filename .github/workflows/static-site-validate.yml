@@ -34,28 +34,21 @@ jobs:
           ref: ${{ steps.wfref.outputs.ref }}
           path: .solvent
 
-      - name: Validate client.yaml
-        run: |
-          F="${{ inputs.config-path }}"
-          test -f "$F" || { echo "::error::$F not found"; exit 1; }
-          for key in client domain aws.region aws.stack_name aws.hosted_zone_id; do
-            val=$(yq -r ".$key // \"\"" "$F")
-            if [ -z "$val" ]; then echo "::error::missing required key: $key"; exit 1; fi
-          done
-          SLUG=$(yq -r '.client' "$F")
-          echo "$SLUG" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$' \
-            || { echo "::error::client slug must be lowercase alphanumeric + hyphens (S3 bucket naming)"; exit 1; }
-
       - name: Lint CloudFormation
-        run: |
-          pipx install cfn-lint
-          cfn-lint .solvent/templates/*.yaml
+        run: pipx run cfn-lint .solvent/templates/*.yaml
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
+
       - run: npm ci
+
+      - uses: ./.solvent/.github/actions/client-config
+        id: cfg
+        with:
+          config-path: ${{ inputs.config-path }}
+
       - run: npm run check
       - run: npm run lint
       - run: npm run build

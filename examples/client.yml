@@ -10,8 +10,8 @@ aws:
   hosted_zone_id: XXXXXXXXXXX
   # bucket_name_override: acmecorp.com-site   # only for pre-convention stacks
 
-analytics:
-  ga_measurement_id: G-XXXXXXXXXX
-
-integrations:
-  web3forms_id: 0000000
+# Baked into the bundle at build time — public by definition, never secrets.
+# Omit any key the site doesn't use.
+public_env:
+  PUBLIC_GA_MEASUREMENT_ID: G-XXXXXXXXXX
+  PUBLIC_WEB3FORMS_ACCESS_KEY: 00000000-0000-0000-0000-000000000000
