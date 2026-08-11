@@ -64,7 +64,7 @@ jobs:
             echo "www=$(yq -r '.www // true' "$F")"
             echo "bucket_override=$(yq -r '.aws.bucket_name_override // \"\"' "$F")"
             echo "ga_id=$(yq -r '.analytics.ga_measurement_id // \"\"' "$F")"
-            echo "web3forms_id=$(yq -r '.integrations.ga_measurement_id // \"\"' "$F")"
+            echo "web3forms_id=$(yq -r '.integrations.web3forms_id // \"\"' "$F")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Node
