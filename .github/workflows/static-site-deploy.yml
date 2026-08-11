@@ -61,9 +61,6 @@ jobs:
       - run: npm run lint
 
       - name: Build
-        env:
-          PUBLIC_WEB3FORMS_ACCESS_KEY: ${{ steps.cfg.outputs.web3forms_id }}
-          PUBLIC_GA_MEASUREMENT_ID: ${{ steps.cfg.outputs.ga_id }}
         run: npm run build
 
       - name: Configure AWS credentials (OIDC)

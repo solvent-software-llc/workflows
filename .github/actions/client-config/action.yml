@@ -56,7 +56,8 @@ runs:
           fail=1
         fi
 
-        WWW=$(yq -r '.www // true' "$F")
+        WWW=$(yq -r '.www' "$F")
+        [ "$WWW" = "null" ] && WWW=true
         case "$WWW" in
           true|false) ;;
           *) echo "::error file=$F::www must be true or false, got '$WWW'"; fail=1 ;;

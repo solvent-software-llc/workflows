@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: YAML is parseable
+        run: |
+          fail=0
+          while read -r f; do
+            yq -e '.' "$f" > /dev/null 2>&1 || { echo "::error file=$f::invalid YAML"; fail=1; }
+          done < <(find . -path ./.git -prune -o \( -name '*.yml' -o -name '*.yaml' \) -print)
+          exit $fail
+
+      - name: Lint CloudFormation
+        run: pipx run cfn-lint templates/*.yaml
+
+      - name: Lint workflows
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No dangling action outputs
+        run: |
+          yq -r '.outputs | keys | .[]' .github/actions/client-config/action.yml | sort -u > /tmp/declared
+          grep -rhoE 'steps\.cfg\.outputs\.[a-zA-Z0-9_]+' .github/workflows/ \
+            | sed 's/.*outputs\.//' | sort -u > /tmp/referenced
+          if ! dangling=$(comm -13 /tmp/declared /tmp/referenced) || [ -n "$dangling" ]; then
+            echo "::error::workflows reference undeclared outputs: $(echo $dangling)"
+            exit 1
+          fi
+
+      - name: Referenced paths exist
+        run: |
+          fail=0
+          grep -rhoE '\.solvent/[A-Za-z0-9._/-]+' .github/workflows/ | sed 's|^\.solvent/||' \
+            | sed 's|/\*.*||' | sort -u | while read -r p; do
+              [ -e "$p" ] || { echo "::error::workflows reference .solvent/$p which does not exist"; exit 1; }
+            done
+
+      # Both workflows must build with identical env, or validate passes things
+      # deploy rejects (and vice versa).
+      - name: Workflows stay in sync
+        run: |
+          for w in static-site-deploy static-site-validate; do
+            grep -q 'client-config' ".github/workflows/$w.yml" \
+              || { echo "::error::$w.yml does not use the client-config action"; exit 1; }
+          done
+          if grep -nE '^\s+PUBLIC_[A-Z0-9_]+:' .github/workflows/*.yml; then
+            echo "::error::PUBLIC_* belongs in client.yaml public_env, not a workflow env: block"
+            exit 1
+          fi
+
+      - name: Example pins a ref that exists
+        run: |
+          REF=$(grep -oE 'workflows/\.github/workflows/[^@]+@(.+)$' examples/deploy.yml | sed 's/.*@//')
+          git ls-remote --exit-code --tags origin "refs/tags/$REF" > /dev/null \
+            || { echo "::error::examples pin @$REF but no such tag exists"; exit 1; }
+
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Example config is valid
+        id: cfg
+        uses: ./.github/actions/client-config
+        with:
+          config-path: examples/client.yaml
+
+      - name: Outputs are populated
+        run: |
+          for o in slug domain region stack zone www; do
+            v="${{ toJSON(steps.cfg.outputs) }}"
+            echo "$v" | jq -e --arg k "$o" '.[$k] != "" and .[$k] != null' > /dev/null \
+              || { echo "::error::output '$o' is empty"; exit 1; }
+          done
+          echo "--- generated .env ---"; cat .env
+
+      - name: www:false survives parsing
+        run: |
+          cat > /tmp/sub.yaml <<'EOF'
+          client: acme-corp
+          domain: app.acmecorp.com
+          www: false
+          aws: { region: us-east-1, stack_name: acme-corp-site, hosted_zone_id: Z123 }
+          EOF
+          cp /tmp/sub.yaml ./sub.yaml
+
+      - id: sub
+        uses: ./.github/actions/client-config
+        with:
+          config-path: sub.yaml
+          write-env: 'false'
+      - run: |
+          [ "${{ steps.sub.outputs.www }}" = "false" ] \
+            || { echo "::error::www:false parsed as '${{ steps.sub.outputs.www }}'"; exit 1; }
+
+  reject-bad-config:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [missing-zone, bad-slug, bad-env-prefix]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write invalid config
+        run: |
+          case "${{ matrix.case }}" in
+            missing-zone)
+              printf 'client: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s }\n' > bad.yaml ;;
+            bad-slug)
+              printf 'client: Acme_Corp\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\n' > bad.yaml ;;
+            bad-env-prefix)
+              printf 'client: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\npublic_env: { GA_ID: x }\n' > bad.yaml ;;
+          esac
+      - id: run
+        continue-on-error: true
+        uses: ./.github/actions/client-config
+        with:
+          config-path: bad.yaml
+      - name: Must have failed
+        run: |
+          [ "${{ steps.run.outcome }}" = "failure" ] \
+            || { echo "::error::${{ matrix.case }} was accepted but should be rejected"; exit 1; }
