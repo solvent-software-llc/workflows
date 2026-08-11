@@ -1,0 +1,22 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Queue rather than cancel: two concurrent s3 sync --delete runs against the same
+# bucket interleave nondeterministically, and cancelling mid-sync leaves a partial deploy.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    uses: solvent-software-llc/workflows/.github/workflows/static-site-deploy.yml@v1
+    with:
+      aws-role-arn: ${{ vars.AWS_ROLE_ARN }}

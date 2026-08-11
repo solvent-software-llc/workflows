@@ -1,0 +1,12 @@
+name: Validate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: solvent-software-llc/workflows/.github/workflows/static-site-validate.yml@v1

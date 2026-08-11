@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Solvent static site: private S3 bucket + CloudFront (OAC) + ACM cert + Route53.
+  Must be deployed in us-east-1 (ACM certs for CloudFront are region-locked there).
+
+Parameters:
+  ClientSlug:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+    Description: Lowercase slug used for resource naming. Must be S3-bucket-name safe.
+
+  DomainName:
+    Type: String
+    Description: FQDN for the site (apex or subdomain), e.g. example.com or app.example.com
+
+  HostedZoneId:
+    Type: String
+    Description: Route53 hosted zone containing DomainName
+
+  CreateWww:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: Also serve and redirect www.<DomainName>. Set false for subdomain sites.
+
+  BucketNameOverride:
+    Type: String
+    Default: ''
+    Description: >
+      Escape hatch for stacks created before the naming convention changed.
+      Setting this on an existing stack avoids a destructive bucket replacement.
+      Leave empty for all new clients.
+
+Conditions:
+  HasWww: !Equals [!Ref CreateWww, 'true']
+  HasBucketOverride: !Not [!Equals [!Ref BucketNameOverride, '']]
+
+Resources:
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # Domain names contain dots, and CloudFront's HTTPS connection to the S3 REST
+      # endpoint fails cert validation when the bucket name has dots (wildcard certs
+      # match a single label). Slug + account id keeps it dot-free and globally unique.
+      BucketName: !If
+        - HasBucketOverride
+        - !Ref BucketNameOverride
+        - !Sub '${ClientSlug}-site-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # Immutable assets are never deleted at deploy time so in-flight clients
+          # can still fetch old chunks. They expire on a timer instead.
+          - Id: ExpireOldImmutableAssets
+            Status: Enabled
+            Prefix: _app/immutable/
+            ExpirationInDays: 30
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt SiteBucket.Arn
+              - !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  SiteCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      SubjectAlternativeNames: !If
+        - HasWww
+        - [!Sub 'www.${DomainName}']
+        - !Ref 'AWS::NoValue'
+      DomainValidationOptions: !If
+        - HasWww
+        - - DomainName: !Ref DomainName
+            HostedZoneId: !Ref HostedZoneId
+          - DomainName: !Sub 'www.${DomainName}'
+            HostedZoneId: !Ref HostedZoneId
+        - - DomainName: !Ref DomainName
+            HostedZoneId: !Ref HostedZoneId
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${ClientSlug}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${ClientSlug} static site'
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        Aliases: !If
+          - HasWww
+          - [!Ref DomainName, !Sub 'www.${DomainName}']
+          - [!Ref DomainName]
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SiteCertificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Managed-CachingOptimized
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          # Managed-SecurityHeadersPolicy: HSTS, nosniff, frame-ancestors none,
+          # referrer-policy. Upgrading this once upgrades every client.
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 10
+          # S3 origins scoped to s3:GetObject (no ListBucket) return 403 for missing
+          # keys rather than 404, so it must map identically.
+          - ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 10
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2  # CloudFront, global constant
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+
+  DnsRecordIpv6:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+
+  WwwDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasWww
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'www.${DomainName}'
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+
+  WwwDnsRecordIpv6:
+    Type: AWS::Route53::RecordSet
+    Condition: HasWww
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'www.${DomainName}'
+      Type: AAAA
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+
+Outputs:
+  BucketName:
+    Value: !Ref SiteBucket
+  DistributionId:
+    Value: !Ref CloudFrontDistribution
+  CloudFrontDomainName:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  SiteUrl:
+    Value: !Sub 'https://${DomainName}'
