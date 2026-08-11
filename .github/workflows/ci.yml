@@ -72,6 +72,18 @@ jobs:
             exit 1
           fi
 
+      # Context values spliced inline into run: are parsed by bash before
+      # execution. Multi-line or space-containing values break the script;
+      # attacker-controlled ones execute. Pass them through env: instead.
+      - name: No context interpolation inside run blocks
+        continue-on-error: true
+        run: |
+          if grep -rnE '\$\{\{ *(steps|inputs|matrix|github)\.' .github/workflows/*.yml \
+               | grep -E '^\S+:[0-9]+:\s{10,}'; then
+            echo "::error::pass context values through env:, not inline in run:"
+            exit 1
+          fi
+
       - name: Example pins a ref that exists
         run: |
           REF=$(grep -oE 'workflows/\.github/workflows/[^@]+@(.+)$' examples/deploy.yml | sed 's/.*@//')
@@ -89,14 +101,20 @@ jobs:
         with:
           config-path: examples/client.yaml
 
+      # toJSON emits multi-line JSON. Inline ${{ }} splices it in before bash
+      # parses the script, so it must be passed through env:.
       - name: Outputs are populated
+        env:
+          OUTPUTS: ${{ toJSON(steps.cfg.outputs) }}
         run: |
+          fail=0
           for o in slug name domain region stack zone www; do
-            v="${{ toJSON(steps.cfg.outputs) }}"
-            echo "$v" | jq -e --arg k "$o" '.[$k] != "" and .[$k] != null' > /dev/null \
-              || { echo "::error::output '$o' is empty"; exit 1; }
+            if [ -z "$(printf '%s' "$OUTPUTS" | jq -r --arg k "$o" '.[$k] // ""')" ]; then
+              echo "::error::output '$o' is empty"; fail=1
+            fi
           done
           echo "--- generated .env ---"; cat .env
+          exit "$fail"
 
       - name: www:false survives parsing
         run: |
@@ -113,9 +131,12 @@ jobs:
         with:
           config-path: sub.yaml
           write-env: 'false'
-      - run: |
-          [ "${{ steps.sub.outputs.www }}" = "false" ] \
-            || { echo "::error::www:false parsed as '${{ steps.sub.outputs.www }}'"; exit 1; }
+      - name: www must be false
+        env:
+          WWW: ${{ steps.sub.outputs.www }}
+        run: |
+          [ "$WWW" = "false" ] \
+            || { echo "::error::www:false parsed as '$WWW'"; exit 1; }
 
   reject-bad-config:
     runs-on: ubuntu-latest
@@ -126,8 +147,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Write invalid config
+        env:
+          CASE: ${{ matrix.case }}
         run: |
-          case "${{ matrix.case }}" in
+          case "$CASE" in
             missing-zone)
               printf 'slug: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s }\n' > bad.yaml ;;
             bad-slug)
@@ -145,6 +168,9 @@ jobs:
         with:
           config-path: bad.yaml
       - name: Must have failed
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+          CASE: ${{ matrix.case }}
         run: |
-          [ "${{ steps.run.outcome }}" = "failure" ] \
-            || { echo "::error::${{ matrix.case }} was accepted but should be rejected"; exit 1; }
+          [ "$OUTCOME" = "failure" ] \
+            || { echo "::error::$CASE was accepted but should be rejected"; exit 1; }
