@@ -1,5 +1,5 @@
 # Committed configuration for this client. Nothing here is secret.
-client: client-name
+slug: client-name
 tier: static-site
 domain: client-name.com
 www: true # false for subdomain sites like app.acmecorp.com

@@ -33,9 +33,7 @@ jobs:
       # so the template is always version-locked to the workflow that uses it.
       - name: Resolve workflows repo ref
         id: wfref
-        run: |
-          REF="${{ github.job_workflow_ref }}"
-          echo "ref=${REF##*@}" >> "$GITHUB_OUTPUT"
+        run: echo "ref=${GITHUB_JOB_WORKFLOW_REF##*@}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout shared templates
         uses: actions/checkout@v4
