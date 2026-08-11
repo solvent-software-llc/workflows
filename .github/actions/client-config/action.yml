@@ -12,11 +12,18 @@ inputs:
     description: Write .env from public_env. Set false to validate config only.
     required: false
     default: 'true'
+  expect-tier:
+    description: Fail if the config declares a different tier.
+    required: false
+    default: static-site
 
 outputs:
   slug:
-    description: Client slug, used for resource naming
+    description: Resource-naming token, e.g. acme-corp
     value: ${{ steps.parse.outputs.slug }}
+  name:
+    description: Human-readable client name. Falls back to slug when unset.
+    value: ${{ steps.parse.outputs.name }}
   domain:
     value: ${{ steps.parse.outputs.domain }}
   region:
@@ -36,14 +43,17 @@ runs:
     - name: Parse and validate
       id: parse
       shell: bash
+      env:
+        CONFIG_PATH: ${{ inputs.config-path }}
+        EXPECT_TIER: ${{ inputs.expect-tier }}
       run: |
         set -euo pipefail
-        F="${{ inputs.config-path }}"
+        F="$CONFIG_PATH"
         test -f "$F" || { echo "::error::$F not found"; exit 1; }
         yq -e '.' "$F" > /dev/null || { echo "::error::$F is not valid YAML"; exit 1; }
 
         fail=0
-        for key in client domain aws.region aws.stack_name aws.hosted_zone_id; do
+        for key in slug domain aws.region aws.stack_name aws.hosted_zone_id; do
           if [ -z "$(yq -r ".$key // \"\"" "$F")" ]; then
             echo "::error file=$F::missing required key: $key"
             fail=1
@@ -52,10 +62,19 @@ runs:
 
         SLUG=$(yq -r '.slug // ""' "$F")
         if [ -n "$SLUG" ] && ! printf '%s' "$SLUG" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'; then
-          echo "::error file=$F::client slug '$SLUG' must be lowercase alphanumeric plus hyphens, 3-32 chars (S3 bucket naming)"
+          echo "::error file=$F::slug '$SLUG' must be lowercase alphanumeric plus hyphens, 3-32 chars (S3 bucket naming)"
           fail=1
         fi
 
+        # Guards against running a future fullstack config through this workflow.
+        TIER=$(yq -r '.tier // ""' "$F")
+        if [ -n "$TIER" ] && [ "$TIER" != "$EXPECT_TIER" ]; then
+          echo "::error file=$F::tier is '$TIER' but this workflow handles '$EXPECT_TIER'"
+          fail=1
+        fi
+
+        # Read .www directly: the '//' operator treats false as absent, so
+        # '.www // true' would silently turn every www:false into true.
         WWW=$(yq -r '.www' "$F")
         [ "$WWW" = "null" ] && WWW=true
         case "$WWW" in
@@ -63,8 +82,8 @@ runs:
           *) echo "::error file=$F::www must be true or false, got '$WWW'"; fail=1 ;;
         esac
 
-        # A subdomain site with www: true yields www.app.example.com — almost
-        # never intended, and it silently blocks ACM validation.
+        # A subdomain site with www: true yields www.app.example.com, which is
+        # almost never intended and leaves ACM stuck in PENDING_VALIDATION.
         DOMAIN=$(yq -r '.domain // ""' "$F")
         if [ "$WWW" = "true" ] && [ "$(printf '%s' "$DOMAIN" | tr -cd '.' | wc -c)" -gt 1 ]; then
           echo "::error file=$F::domain '$DOMAIN' looks like a subdomain; set www: false"
@@ -81,8 +100,12 @@ runs:
 
         [ "$fail" -eq 0 ] || exit 1
 
+        NAME=$(yq -r '.name // ""' "$F")
+        [ -n "$NAME" ] || NAME="$SLUG"
+
         {
           echo "slug=$SLUG"
+          echo "name=$NAME"
           echo "domain=$DOMAIN"
           echo "www=$WWW"
           echo "region=$(yq -r '.aws.region' "$F")"
@@ -92,14 +115,17 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     # Plain .env, not .env.production: svelte-kit sync runs in dev mode during
-    # `npm run check`, and Vite only loads .env in every mode.
+    # `npm run check`, and Vite loads .env in every mode.
+    # Values are quoted so a '#' in a key is not parsed as a comment.
     - name: Write .env
       if: inputs.write-env == 'true'
       shell: bash
+      env:
+        CONFIG_PATH: ${{ inputs.config-path }}
       run: |
         set -euo pipefail
-        yq -r '.public_env // {} | to_entries[] | .key + "=" + (.value | tostring)' \
-          "${{ inputs.config-path }}" > .env
+        yq -r '.public_env // {} | to_entries[] | .key + "=\"" + (.value | tostring) + "\""' \
+          "$CONFIG_PATH" > .env
         if [ -s .env ]; then
           echo "Injected: $(cut -d= -f1 .env | tr '\n' ' ')"
         else

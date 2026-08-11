@@ -91,7 +91,7 @@ jobs:
 
       - name: Outputs are populated
         run: |
-          for o in slug domain region stack zone www; do
+          for o in slug name domain region stack zone www; do
             v="${{ toJSON(steps.cfg.outputs) }}"
             echo "$v" | jq -e --arg k "$o" '.[$k] != "" and .[$k] != null' > /dev/null \
               || { echo "::error::output '$o' is empty"; exit 1; }
@@ -101,7 +101,7 @@ jobs:
       - name: www:false survives parsing
         run: |
           cat > /tmp/sub.yaml <<'EOF'
-          client: acme-corp
+          slug: acme-corp
           domain: app.acmecorp.com
           www: false
           aws: { region: us-east-1, stack_name: acme-corp-site, hosted_zone_id: Z123 }
@@ -122,18 +122,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [missing-zone, bad-slug, bad-env-prefix]
+        case: [missing-zone, bad-slug, wrong-tier, subdomain-with-www, bad-env-prefix]
     steps:
       - uses: actions/checkout@v4
       - name: Write invalid config
         run: |
           case "${{ matrix.case }}" in
             missing-zone)
-              printf 'client: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s }\n' > bad.yaml ;;
+              printf 'slug: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s }\n' > bad.yaml ;;
             bad-slug)
-              printf 'client: Acme_Corp\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\n' > bad.yaml ;;
+              printf 'slug: Acme_Corp\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\n' > bad.yaml ;;
+            wrong-tier)
+              printf 'slug: a-b\ntier: fullstack\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\n' > bad.yaml ;;
+            subdomain-with-www)
+              printf 'slug: a-b\ndomain: app.a.com\nwww: true\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\n' > bad.yaml ;;
             bad-env-prefix)
-              printf 'client: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\npublic_env: { GA_ID: x }\n' > bad.yaml ;;
+              printf 'slug: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\npublic_env: { GA_ID: x }\n' > bad.yaml ;;
           esac
       - id: run
         continue-on-error: true

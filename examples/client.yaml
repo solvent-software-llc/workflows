@@ -1,14 +1,15 @@
 # Committed configuration for this client. Nothing here is secret.
-slug: client-name
+slug: client-name # resource naming token: lowercase, hyphens, 3-32 chars
+name: Client Name # human-readable, used for AWS cost-allocation tags
 tier: static-site
 domain: client-name.com
-www: true # false for subdomain sites like app.acmecorp.com
+www: true # false for subdomain sites like app.client-name.com
 
 aws:
   region: us-east-1 # must be us-east-1 for the static tier (ACM/CloudFront)
   stack_name: client-name-site
   hosted_zone_id: XXXXXXXXXXX
-  # bucket_name_override: acmecorp.com-site   # only for pre-convention stacks
+  # bucket_name_override: client-name.com-site   # only for pre-convention stacks
 
 # Baked into the bundle at build time — public by definition, never secrets.
 # Omit any key the site doesn't use.
