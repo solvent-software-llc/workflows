@@ -127,6 +127,33 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  UrlRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${ClientSlug}-url-rewrite'
+      AutoPublish: true
+      FunctionConfig:
+        Comment: >
+          adapter-static emits flat page.html files (no directory/index.html
+          structure), but app links and crawlers request extensionless clean
+          URLs. Append .html (or index.html for a trailing slash) so the S3
+          origin lookup finds the prerendered file and returns a real 200
+          instead of falling through to the 404 custom-error page.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+            var request = event.request;
+            var uri = request.uri;
+
+            if (uri.endsWith('/')) {
+                request.uri += 'index.html';
+            } else if (!uri.includes('.')) {
+                request.uri += '.html';
+            }
+
+            return request;
+        }
+
   CloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -162,6 +189,9 @@ Resources:
           # Managed-SecurityHeadersPolicy: HSTS, nosniff, frame-ancestors none,
           # referrer-policy. Upgrading this once upgrades every client.
           ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt UrlRewriteFunction.FunctionARN
         CustomErrorResponses:
           - ErrorCode: 404
             ResponseCode: 404
