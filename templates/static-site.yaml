@@ -133,12 +133,7 @@ Resources:
       Name: !Sub '${ClientSlug}-url-rewrite'
       AutoPublish: true
       FunctionConfig:
-        Comment: >
-          adapter-static emits flat page.html files (no directory/index.html
-          structure), but app links and crawlers request extensionless clean
-          URLs. Append .html (or index.html for a trailing slash) so the S3
-          origin lookup finds the prerendered file and returns a real 200
-          instead of falling through to the 404 custom-error page.
+        Comment: Rewrite clean URLs to the matching prerendered .html file
         Runtime: cloudfront-js-2.0
       FunctionCode: |
         function handler(event) {
