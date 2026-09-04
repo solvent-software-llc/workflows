@@ -36,6 +36,9 @@ outputs:
     value: ${{ steps.parse.outputs.www }}
   bucket_override:
     value: ${{ steps.parse.outputs.bucket_override }}
+  preview_domain:
+    description: '<subdomain>.<domain> when preview.subdomain is set, otherwise empty'
+    value: ${{ steps.parse.outputs.preview_domain }}
 
 runs:
   using: composite
@@ -98,6 +101,19 @@ runs:
           esac
         done < <(yq -r '.public_env // {} | to_entries[] | .key' "$F")
 
+        # preview.subdomain is optional; when set it must be a single valid DNS
+        # label (no dots — nested preview subdomains aren't supported).
+        PREVIEW_SUBDOMAIN=$(yq -r '.preview.subdomain // ""' "$F")
+        PREVIEW_DOMAIN=""
+        if [ -n "$PREVIEW_SUBDOMAIN" ]; then
+          if ! printf '%s' "$PREVIEW_SUBDOMAIN" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; then
+            echo "::error file=$F::preview.subdomain '$PREVIEW_SUBDOMAIN' must be a single lowercase DNS label"
+            fail=1
+          else
+            PREVIEW_DOMAIN="${PREVIEW_SUBDOMAIN}.${DOMAIN}"
+          fi
+        fi
+
         [ "$fail" -eq 0 ] || exit 1
 
         NAME=$(yq -r '.name // ""' "$F")
@@ -112,6 +128,7 @@ runs:
           echo "stack=$(yq -r '.aws.stack_name' "$F")"
           echo "zone=$(yq -r '.aws.hosted_zone_id' "$F")"
           echo "bucket_override=$(yq -r '.aws.bucket_name_override // ""' "$F")"
+          echo "preview_domain=$PREVIEW_DOMAIN"
         } >> "$GITHUB_OUTPUT"
 
     # Plain .env, not .env.production: svelte-kit sync runs in dev mode during

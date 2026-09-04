@@ -82,7 +82,18 @@ Required: `slug`, `domain`, `aws.region`, `aws.stack_name`,
 `aws.hosted_zone_id`.
 Optional: `name` (human-readable, for AWS tags; defaults to slug), `tier`
 (asserted against the workflow), `www` (default true), `public_env`,
-`aws.bucket_name_override`.
+`aws.bucket_name_override`, `preview.subdomain`.
+
+`preview.subdomain`, when set, enables `static-site-deploy.yml`'s
+`deploy-target: preview` mode (see `examples/preview.yml`): builds land under
+a `preview/` key prefix in the *same* bucket and are served from
+`<subdomain>.<domain>` on the *same* CloudFront distribution/cert, routed by a
+CloudFront Function (`PreviewRoutingFunction` in `static-site.yaml`) that
+rewrites the request URI based on the `Host` header. No second stack, bucket,
+or cert per client. First enabling it on an existing stack replaces the ACM
+certificate (SAN changes require replacement) and re-validates via the
+already-present Route53 DNS records — a few minutes, self-service, no manual
+step. `preview.subdomain` must be a single DNS label (no dots).
 
 `slug` matches `^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$` — it is a resource-naming
 token, not a display name. `public_env` keys must be `PUBLIC_*` or SvelteKit

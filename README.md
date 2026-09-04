@@ -52,9 +52,24 @@ CloudFront propagation. Later deploys are 2–3 minutes.
 | `aws.hosted_zone_id` | yes | Route53 zone containing `domain`. |
 | `aws.bucket_name_override` | no | Only for stacks predating the naming convention. |
 | `public_env` | no | `PUBLIC_*` keys written to `.env` at build time. |
+| `preview.subdomain` | no | Enables preview deploys at `<subdomain>.<domain>`. See below. |
 
 Everything in `public_env` ships in the client bundle. It is public by
 definition — never put secrets there.
+
+## Preview deploys
+
+Set `preview.subdomain` in `client.yaml` (e.g. `preview`) and copy
+`examples/preview.yml` into `.github/workflows/` to get a second environment
+at `<subdomain>.<domain>`, deployed on every push to `dev`. It reuses the same
+bucket, distribution, and certificate as production — builds land under a
+`preview/` key prefix and a CloudFront Function routes the preview hostname to
+that prefix, so there's no second stack to provision or pay for.
+
+Enabling it on an existing client replaces the ACM certificate (adding a SAN
+requires replacement) and re-validates via the DNS records CloudFormation
+already manages — a few minutes of reissuance on that one deploy, no manual
+step required.
 
 ## Versioning
 

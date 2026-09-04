@@ -31,9 +31,20 @@ Parameters:
       Setting this on an existing stack avoids a destructive bucket replacement.
       Leave empty for all new clients.
 
+  PreviewDomainName:
+    Type: String
+    Default: ''
+    Description: >
+      FQDN for a preview environment served from the same distribution/bucket
+      under a preview/ key prefix, e.g. preview.example.com. Leave empty to
+      disable. Enabling this on an existing stack replaces the ACM certificate
+      (SANs require replacement) and briefly re-validates via DNS.
+
 Conditions:
   HasWww: !Equals [!Ref CreateWww, 'true']
   HasBucketOverride: !Not [!Equals [!Ref BucketNameOverride, '']]
+  HasPreview: !Not [!Equals [!Ref PreviewDomainName, '']]
+  HasWwwAndPreview: !And [!Condition HasWww, !Condition HasPreview]
 
 Resources:
 
@@ -106,17 +117,37 @@ Resources:
       DomainName: !Ref DomainName
       ValidationMethod: DNS
       SubjectAlternativeNames: !If
-        - HasWww
-        - [!Sub 'www.${DomainName}']
-        - !Ref 'AWS::NoValue'
+        - HasWwwAndPreview
+        - [!Sub 'www.${DomainName}', !Ref PreviewDomainName]
+        - !If
+          - HasWww
+          - [!Sub 'www.${DomainName}']
+          - !If
+            - HasPreview
+            - [!Ref PreviewDomainName]
+            - !Ref 'AWS::NoValue'
       DomainValidationOptions: !If
-        - HasWww
+        - HasWwwAndPreview
         - - DomainName: !Ref DomainName
             HostedZoneId: !Ref HostedZoneId
           - DomainName: !Sub 'www.${DomainName}'
             HostedZoneId: !Ref HostedZoneId
-        - - DomainName: !Ref DomainName
+          - DomainName: !Ref PreviewDomainName
             HostedZoneId: !Ref HostedZoneId
+        - !If
+          - HasWww
+          - - DomainName: !Ref DomainName
+              HostedZoneId: !Ref HostedZoneId
+            - DomainName: !Sub 'www.${DomainName}'
+              HostedZoneId: !Ref HostedZoneId
+          - !If
+            - HasPreview
+            - - DomainName: !Ref DomainName
+                HostedZoneId: !Ref HostedZoneId
+              - DomainName: !Ref PreviewDomainName
+                HostedZoneId: !Ref HostedZoneId
+            - - DomainName: !Ref DomainName
+                HostedZoneId: !Ref HostedZoneId
 
   CloudFrontOAC:
     Type: AWS::CloudFront::OriginAccessControl
@@ -127,25 +158,40 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  # Also routes PreviewDomainName requests to the preview/ key prefix within the
+  # same bucket, so preview needs no separate origin, bucket, or distribution.
+  # Only one CloudFront Function may run per event type per behavior, so the
+  # clean-URL rewrite and the preview prefix rewrite live in one function
+  # rather than two competing FunctionAssociations. When PreviewDomainName is
+  # unset (''), the host comparison never matches and this is a no-op — safe
+  # to leave unconditional rather than threading HasPreview through here too.
   UrlRewriteFunction:
     Type: AWS::CloudFront::Function
     Properties:
       Name: !Sub '${ClientSlug}-url-rewrite'
       AutoPublish: true
       FunctionConfig:
-        Comment: Rewrite clean URLs to the matching prerendered .html file
+        Comment: >
+          Rewrite clean URLs to the matching prerendered .html file; route
+          PreviewDomainName to the preview/ prefix
         Runtime: cloudfront-js-2.0
-      FunctionCode: |
+      FunctionCode: !Sub |
         function handler(event) {
             var request = event.request;
             var uri = request.uri;
 
             if (uri.endsWith('/')) {
-                request.uri += 'index.html';
+                uri += 'index.html';
             } else if (!uri.includes('.')) {
-                request.uri += '.html';
+                uri += '.html';
             }
 
+            var host = request.headers.host && request.headers.host.value;
+            if (host === '${PreviewDomainName}') {
+                uri = '/preview' + uri;
+            }
+
+            request.uri = uri;
             return request;
         }
 
@@ -160,9 +206,15 @@ Resources:
         DefaultRootObject: index.html
         PriceClass: PriceClass_100
         Aliases: !If
-          - HasWww
-          - [!Ref DomainName, !Sub 'www.${DomainName}']
-          - [!Ref DomainName]
+          - HasWwwAndPreview
+          - [!Ref DomainName, !Sub 'www.${DomainName}', !Ref PreviewDomainName]
+          - !If
+            - HasWww
+            - [!Ref DomainName, !Sub 'www.${DomainName}']
+            - !If
+              - HasPreview
+              - [!Ref DomainName, !Ref PreviewDomainName]
+              - [!Ref DomainName]
         ViewerCertificate:
           AcmCertificateArn: !Ref SiteCertificate
           SslSupportMethod: sni-only
@@ -241,6 +293,28 @@ Resources:
         HostedZoneId: Z2FDTNDATAQYW2
         DNSName: !GetAtt CloudFrontDistribution.DomainName
 
+  PreviewDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasPreview
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref PreviewDomainName
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+
+  PreviewDnsRecordIpv6:
+    Type: AWS::Route53::RecordSet
+    Condition: HasPreview
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref PreviewDomainName
+      Type: AAAA
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+
 Outputs:
   BucketName:
     Value: !Ref SiteBucket
@@ -250,3 +324,6 @@ Outputs:
     Value: !GetAtt CloudFrontDistribution.DomainName
   SiteUrl:
     Value: !Sub 'https://${DomainName}'
+  PreviewUrl:
+    Condition: HasPreview
+    Value: !Sub 'https://${PreviewDomainName}'

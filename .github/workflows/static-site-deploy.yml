@@ -16,6 +16,15 @@ on:
         required: false
         type: string
         default: '22'
+      deploy-target:
+        description: >
+          'production' syncs the build to the bucket root and serves it from
+          the primary domain(s). 'preview' syncs to the preview/ prefix,
+          served from client.yaml's preview.subdomain — the client.yaml must
+          declare one.
+        required: false
+        type: string
+        default: production
 
 permissions:
   id-token: write
@@ -55,6 +64,16 @@ jobs:
         with:
           config-path: ${{ inputs.config-path }}
 
+      - name: Validate deploy target
+        if: inputs.deploy-target == 'preview'
+        env:
+          PREVIEW_DOMAIN: ${{ steps.cfg.outputs.preview_domain }}
+        run: |
+          if [ -z "$PREVIEW_DOMAIN" ]; then
+            echo "::error::deploy-target is 'preview' but client.yaml has no preview.subdomain set"
+            exit 1
+          fi
+
       - run: npm run check
       - run: npm run lint
 
@@ -80,6 +99,7 @@ jobs:
           ZONE: ${{ steps.cfg.outputs.zone }}
           WWW: ${{ steps.cfg.outputs.www }}
           BUCKET_OVERRIDE: ${{ steps.cfg.outputs.bucket_override }}
+          PREVIEW_DOMAIN: ${{ steps.cfg.outputs.preview_domain }}
         run: |
           aws cloudformation deploy \
             --template-file .solvent/templates/static-site.yaml \
@@ -90,6 +110,7 @@ jobs:
               HostedZoneId="$ZONE" \
               CreateWww="$WWW" \
               BucketNameOverride="$BUCKET_OVERRIDE" \
+              PreviewDomainName="$PREVIEW_DOMAIN" \
             --tags \
               solvent:client="$NAME" \
               solvent:slug="$SLUG" \
@@ -111,24 +132,41 @@ jobs:
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
           echo "dist=$DIST" >> "$GITHUB_OUTPUT"
 
+      # preview builds land under a preview/ key prefix in the same bucket, routed by
+      # the distribution's PreviewRoutingFunction — see static-site.yaml. Production
+      # is unprefixed, unchanged from before deploy-target existed.
+      - name: Resolve key prefix
+        id: prefix
+        env:
+          TARGET: ${{ inputs.deploy-target }}
+        run: |
+          if [ "$TARGET" = "preview" ]; then
+            echo "prefix=preview/" >> "$GITHUB_OUTPUT"
+          else
+            echo "prefix=" >> "$GITHUB_OUTPUT"
+          fi
+
       # Content-hashed assets go first so freshly-deployed HTML never references a chunk
       # that hasn't landed. No --delete: a client holding the previous index.html still
       # needs the old chunks. The bucket lifecycle rule expires them after 30 days.
       - name: Sync immutable assets
         env:
           BUCKET: ${{ steps.stack.outputs.bucket }}
+          PREFIX: ${{ steps.prefix.outputs.prefix }}
         run: |
-          aws s3 sync ./build/_app/immutable "s3://$BUCKET/_app/immutable" \
+          aws s3 sync ./build/_app/immutable "s3://$BUCKET/${PREFIX}_app/immutable" \
             --exclude '*.DS_Store' \
             --cache-control 'public,max-age=31536000,immutable'
 
       # Stable filenames must revalidate on every visit. --delete here so the bucket
-      # mirrors the build exactly.
+      # mirrors the build exactly. Scoped to the prefix so a preview sync's --delete
+      # never touches production objects (or vice versa) in the shared bucket.
       - name: Sync unversioned files
         env:
           BUCKET: ${{ steps.stack.outputs.bucket }}
+          PREFIX: ${{ steps.prefix.outputs.prefix }}
         run: |
-          aws s3 sync ./build "s3://$BUCKET" \
+          aws s3 sync ./build "s3://$BUCKET/$PREFIX" \
             --delete \
             --exclude '_app/immutable/*' \
             --exclude '*.DS_Store' \
@@ -137,20 +175,28 @@ jobs:
       - name: Invalidate CloudFront
         env:
           DIST: ${{ steps.stack.outputs.dist }}
+          PREFIX: ${{ steps.prefix.outputs.prefix }}
         run: |
           aws cloudfront create-invalidation \
             --distribution-id "$DIST" \
-            --paths '/' '/index.html' '/404.html' '/version.json'
+            --paths "/${PREFIX}" "/${PREFIX}index.html" "/${PREFIX}404.html" "/${PREFIX}version.json"
 
       - name: Summary
         env:
           DOMAIN: ${{ steps.cfg.outputs.domain }}
+          PREVIEW_DOMAIN: ${{ steps.cfg.outputs.preview_domain }}
+          TARGET: ${{ inputs.deploy-target }}
           STACK: ${{ steps.cfg.outputs.stack }}
           BUCKET: ${{ steps.stack.outputs.bucket }}
           DIST: ${{ steps.stack.outputs.dist }}
         run: |
+          if [ "$TARGET" = "preview" ]; then
+            URL="https://$PREVIEW_DOMAIN"
+          else
+            URL="https://$DOMAIN"
+          fi
           {
-            echo "### Deployed https://$DOMAIN"
+            echo "### Deployed $URL"
             echo "- Stack: \`$STACK\`"
             echo "- Bucket: \`$BUCKET\`"
             echo "- Distribution: \`$DIST\`"

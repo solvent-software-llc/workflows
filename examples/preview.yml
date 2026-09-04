@@ -1,0 +1,24 @@
+name: Preview deploy
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: {}
+
+# Separate group from deploy.yml's deploy-${{ github.ref }}: preview and production
+# sync different key prefixes in the same bucket and never need to queue behind
+# each other, only behind themselves.
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    uses: solvent-software-llc/workflows/.github/workflows/static-site-deploy.yml@v1
+    with:
+      aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
+      deploy-target: preview

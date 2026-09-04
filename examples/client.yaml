@@ -11,6 +11,13 @@ aws:
   hosted_zone_id: XXXXXXXXXXX
   # bucket_name_override: client-name.com-site   # only for pre-convention stacks
 
+# Optional. Serves the preview.yml workflow's builds from <subdomain>.<domain>,
+# out of the same bucket/distribution/cert as production. Omit to disable.
+# First enabling this replaces the ACM cert (new SAN) and briefly re-validates
+# via DNS — expect a few minutes of cert reissuance on that one deploy.
+# preview:
+#   subdomain: preview
+
 # Baked into the bundle at build time — public by definition, never secrets.
 # Omit any key the site doesn't use.
 public_env:

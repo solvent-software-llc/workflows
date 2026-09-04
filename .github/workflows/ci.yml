@@ -138,12 +138,32 @@ jobs:
           [ "$WWW" = "false" ] \
             || { echo "::error::www:false parsed as '$WWW'"; exit 1; }
 
+      - name: preview.subdomain composes into preview_domain
+        run: |
+          cat > preview.yaml <<'EOF'
+          slug: acme-corp
+          domain: acmecorp.com
+          preview: { subdomain: preview }
+          aws: { region: us-east-1, stack_name: acme-corp-site, hosted_zone_id: Z123 }
+          EOF
+      - id: preview
+        uses: ./.github/actions/client-config
+        with:
+          config-path: preview.yaml
+          write-env: 'false'
+      - name: preview_domain must be composed
+        env:
+          PREVIEW_DOMAIN: ${{ steps.preview.outputs.preview_domain }}
+        run: |
+          [ "$PREVIEW_DOMAIN" = "preview.acmecorp.com" ] \
+            || { echo "::error::preview_domain was '$PREVIEW_DOMAIN', expected preview.acmecorp.com"; exit 1; }
+
   reject-bad-config:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        case: [missing-zone, bad-slug, wrong-tier, subdomain-with-www, bad-env-prefix]
+        case: [missing-zone, bad-slug, wrong-tier, subdomain-with-www, bad-env-prefix, bad-preview-subdomain]
     steps:
       - uses: actions/checkout@v4
       - name: Write invalid config
@@ -161,6 +181,8 @@ jobs:
               printf 'slug: a-b\ndomain: app.a.com\nwww: true\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\n' > bad.yaml ;;
             bad-env-prefix)
               printf 'slug: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\npublic_env: { GA_ID: x }\n' > bad.yaml ;;
+            bad-preview-subdomain)
+              printf 'slug: a-b\ndomain: a.com\naws: { region: us-east-1, stack_name: s, hosted_zone_id: Z1 }\npreview: { subdomain: "preview.nope" }\n' > bad.yaml ;;
           esac
       - id: run
         continue-on-error: true
