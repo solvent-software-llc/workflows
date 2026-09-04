@@ -23,6 +23,10 @@ one-line diff.
      --capabilities CAPABILITY_NAMED_IAM
    ```
 
+   Add `PreviewBranch=dev` to the `--parameter-overrides` if this client will
+   use preview deploys (see below) — it scopes the deploy role's OIDC trust
+   policy to also accept that branch. Omit it otherwise.
+
    `ClientSlug` must match the `slug` in `client.yaml` — the deploy role's S3
    permissions are scoped to `<slug>-site-<account-id>`.
 

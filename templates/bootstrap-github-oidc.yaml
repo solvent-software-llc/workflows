@@ -21,6 +21,13 @@ Parameters:
   DeployBranch:
     Type: String
     Default: main
+  PreviewBranch:
+    Type: String
+    Default: ''
+    Description: >
+      Branch preview.yml deploys from (see the static-site tier's preview.subdomain).
+      Leave empty if this client doesn't use preview deploys — omitting it keeps the
+      trust policy scoped to DeployBranch only.
   CreateOidcProvider:
     Type: String
     AllowedValues: ['true', 'false']
@@ -31,6 +38,7 @@ Parameters:
 
 Conditions:
   ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+  HasPreviewBranch: !Not [!Equals [!Ref PreviewBranch, '']]
 
 Resources:
   GitHubOIDCProvider:
@@ -60,7 +68,11 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrg}/${RepoName}:ref:refs/heads/${DeployBranch}'
+                token.actions.githubusercontent.com:sub: !If
+                  - HasPreviewBranch
+                  - - !Sub 'repo:${GitHubOrg}/${RepoName}:ref:refs/heads/${DeployBranch}'
+                    - !Sub 'repo:${GitHubOrg}/${RepoName}:ref:refs/heads/${PreviewBranch}'
+                  - !Sub 'repo:${GitHubOrg}/${RepoName}:ref:refs/heads/${DeployBranch}'
       Policies:
         - PolicyName: site-deploy
           PolicyDocument:
@@ -125,6 +137,12 @@ Resources:
                   - cloudfront:GetResponseHeadersPolicy
                   - cloudfront:CreateInvalidation
                   - cloudfront:GetInvalidation
+                  - cloudfront:GetFunction
+                  - cloudfront:CreateFunction
+                  - cloudfront:DescribeFunction
+                  - cloudfront:UpdateFunction
+                  - cloudfront:PublishFunction
+                  - cloudfront:DeleteFunction
                 Resource: '*'
               - Sid: ACM
                 Effect: Allow
